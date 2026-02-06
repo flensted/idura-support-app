@@ -1,6 +1,8 @@
 import express, { Request, Response } from "express";
+import crypto from "crypto";
 import { ClaudeService } from "./services/claude.js";
 import { checkRateLimit, getClientId } from "./services/rate-limiter.js";
+import { ensureKBInitialized, rebuildKB, getKBStats } from "./services/knowledge-base.js";
 
 const app = express();
 app.use(express.json());
@@ -34,7 +36,92 @@ function getClaudeService(): ClaudeService {
 
 // Health check endpoint
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
+  const kbStats = getKBStats();
+  res.json({
+    status: "ok",
+    kb: {
+      initialized: kbStats.initialized,
+      chunkCount: kbStats.chunkCount,
+      lastInitTime: kbStats.lastInitTime ? new Date(kbStats.lastInitTime).toISOString() : null,
+    },
+  });
+});
+
+// KB stats endpoint
+app.get("/api/kb/stats", (_req: Request, res: Response) => {
+  const stats = getKBStats();
+  res.json({
+    initialized: stats.initialized,
+    chunkCount: stats.chunkCount,
+    lastInitTime: stats.lastInitTime ? new Date(stats.lastInitTime).toISOString() : null,
+  });
+});
+
+// Manual KB rebuild endpoint (protected by admin key)
+app.post("/api/kb/rebuild", async (req: Request, res: Response) => {
+  const adminKey = process.env.ADMIN_API_KEY;
+  const providedKey = req.headers["x-admin-key"];
+
+  if (adminKey && providedKey !== adminKey) {
+    res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" } satisfies ErrorResponse);
+    return;
+  }
+
+  try {
+    await rebuildKB();
+    const stats = getKBStats();
+    res.json({
+      success: true,
+      chunkCount: stats.chunkCount,
+      lastInitTime: new Date(stats.lastInitTime).toISOString(),
+    });
+  } catch (error) {
+    console.error("KB rebuild failed:", error);
+    res.status(500).json({ error: "Failed to rebuild KB", code: "KB_REBUILD_FAILED" } satisfies ErrorResponse);
+  }
+});
+
+// GitHub webhook for auto-rebuild
+app.post("/api/webhook/github", async (req: Request, res: Response) => {
+  const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
+
+  // Verify webhook signature if secret is configured
+  if (webhookSecret) {
+    const signature = req.headers["x-hub-signature-256"] as string;
+    if (!signature) {
+      res.status(401).json({ error: "Missing signature", code: "MISSING_SIGNATURE" } satisfies ErrorResponse);
+      return;
+    }
+
+    const body = JSON.stringify(req.body);
+    const expectedSignature = "sha256=" + crypto.createHmac("sha256", webhookSecret).update(body).digest("hex");
+
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      res.status(401).json({ error: "Invalid signature", code: "INVALID_SIGNATURE" } satisfies ErrorResponse);
+      return;
+    }
+  }
+
+  const event = req.headers["x-github-event"];
+
+  // Only rebuild on push events to the docs repo
+  if (event === "push") {
+    const payload = req.body;
+    const ref = payload.ref || "";
+
+    // Only rebuild on pushes to main/master
+    if (ref === "refs/heads/main" || ref === "refs/heads/master") {
+      console.log("GitHub push to main branch detected, rebuilding KB...");
+
+      // Rebuild asynchronously, don't wait
+      rebuildKB().catch((err) => console.error("Background KB rebuild failed:", err));
+
+      res.json({ success: true, message: "KB rebuild triggered" });
+      return;
+    }
+  }
+
+  res.json({ success: true, message: "Event received but no action taken" });
 });
 
 // Main ask endpoint
@@ -113,6 +200,9 @@ app.post("/api/ask", async (req: Request, res: Response) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// Initialize KB on startup (non-blocking)
+ensureKBInitialized().catch((err) => console.error("Initial KB load failed:", err));
 
 app.listen(PORT, () => {
   console.log(`Idura Support API listening on port ${PORT}`);
