@@ -3,9 +3,24 @@ import crypto from "crypto";
 import { ClaudeService } from "./services/claude.js";
 import { checkRateLimit, getClientId } from "./services/rate-limiter.js";
 import { ensureKBInitialized, rebuildKB, getKBStats } from "./services/knowledge-base.js";
+import {
+  verifySlackSignature,
+  extractQuestion,
+  formatSlackResponse,
+  postSlackMessage,
+  SlackEvent,
+} from "./services/slack.js";
 
 const app = express();
-app.use(express.json());
+
+// Raw body parsing for Slack signature verification
+app.use(
+  express.json({
+    verify: (req: Request & { rawBody?: string }, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
 
 interface AskRequest {
   question: string;
@@ -43,6 +58,9 @@ app.get("/health", (_req: Request, res: Response) => {
       initialized: kbStats.initialized,
       chunkCount: kbStats.chunkCount,
       lastInitTime: kbStats.lastInitTime ? new Date(kbStats.lastInitTime).toISOString() : null,
+    },
+    slack: {
+      configured: !!(process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET),
     },
   });
 });
@@ -122,6 +140,93 @@ app.post("/api/webhook/github", async (req: Request, res: Response) => {
   }
 
   res.json({ success: true, message: "Event received but no action taken" });
+});
+
+// Slack Events API endpoint
+app.post("/api/slack/events", async (req: Request & { rawBody?: string }, res: Response) => {
+  const signingSecret = process.env.SLACK_SIGNING_SECRET;
+  const botToken = process.env.SLACK_BOT_TOKEN;
+
+  // Verify Slack signature
+  if (signingSecret) {
+    const signature = req.headers["x-slack-signature"] as string;
+    const timestamp = req.headers["x-slack-request-timestamp"] as string;
+
+    if (!signature || !timestamp || !req.rawBody) {
+      res.status(401).json({ error: "Missing signature headers" });
+      return;
+    }
+
+    if (!verifySlackSignature(signingSecret, signature, timestamp, req.rawBody)) {
+      res.status(401).json({ error: "Invalid signature" });
+      return;
+    }
+  }
+
+  const event: SlackEvent = req.body;
+
+  // Handle URL verification challenge
+  if (event.type === "url_verification") {
+    res.json({ challenge: event.challenge });
+    return;
+  }
+
+  // Acknowledge receipt immediately (Slack expects response within 3 seconds)
+  res.status(200).send();
+
+  // Process event asynchronously
+  if (event.type === "event_callback" && event.event) {
+    const slackEvent = event.event;
+
+    // Handle app mentions and direct messages
+    if (
+      (slackEvent.type === "app_mention" || slackEvent.type === "message") &&
+      slackEvent.text &&
+      slackEvent.channel
+    ) {
+      // Skip bot's own messages
+      if (slackEvent.user === undefined) return;
+
+      const question = extractQuestion(slackEvent.text);
+      if (!question) return;
+
+      console.log(`Slack question from ${slackEvent.user}: ${question}`);
+
+      try {
+        const claude = getClaudeService();
+        const result = await claude.ask(question);
+        const blocks = formatSlackResponse(result.answer, result.sources);
+
+        if (botToken) {
+          await postSlackMessage(
+            botToken,
+            slackEvent.channel,
+            blocks,
+            slackEvent.thread_ts || slackEvent.ts // Reply in thread if in thread
+          );
+        }
+      } catch (error) {
+        console.error("Error processing Slack message:", error);
+
+        if (botToken) {
+          await postSlackMessage(
+            botToken,
+            slackEvent.channel,
+            [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: "Sorry, I encountered an error processing your question. Please try again.",
+                },
+              },
+            ],
+            slackEvent.thread_ts || slackEvent.ts
+          );
+        }
+      }
+    }
+  }
 });
 
 // Main ask endpoint
