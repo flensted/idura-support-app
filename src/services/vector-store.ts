@@ -1,4 +1,4 @@
-import { generateEmbedding, cosineSimilarity } from "./embeddings.js";
+import { generateEmbedding, generateEmbeddings, cosineSimilarity } from "./embeddings.js";
 import { ParsedDoc, DocSection } from "./docs-parser.js";
 
 interface DocChunk {
@@ -17,6 +17,18 @@ interface SearchResult {
   score: number;
 }
 
+// Pending chunk without embedding (used during batch processing)
+interface PendingChunk {
+  id: string;
+  docPath: string;
+  title: string;
+  category: string;
+  product: string;
+  heading: string;
+  content: string;
+  textForEmbedding: string;
+}
+
 class VectorStore {
   private chunks: DocChunk[] = [];
   private initialized = false;
@@ -29,62 +41,81 @@ class VectorStore {
     return this.chunks.length;
   }
 
-  addDoc(doc: ParsedDoc): void {
-    const { metadata, sections, content } = doc;
+  async addDocs(docs: ParsedDoc[]): Promise<void> {
+    // Collect all chunks first without embeddings
+    const pendingChunks: PendingChunk[] = [];
 
-    // If no sections, treat whole doc as one chunk
-    if (sections.length === 0) {
-      const chunk: DocChunk = {
-        id: `${metadata.path}#main`,
-        docPath: metadata.path,
-        title: metadata.title,
-        category: metadata.category,
-        product: metadata.product,
-        heading: metadata.title,
-        content: content.slice(0, 2000), // Limit chunk size
-        embedding: generateEmbedding(`${metadata.title} ${content}`),
-      };
-      this.chunks.push(chunk);
-      return;
-    }
+    for (const doc of docs) {
+      const { metadata, sections, content } = doc;
 
-    // Create a chunk for each section
-    for (let i = 0; i < sections.length; i++) {
-      const section = sections[i];
-      const chunkText = `${section.heading}\n${section.content}`.slice(0, 2000);
-
-      if (chunkText.trim().length < 50) {
-        continue; // Skip very short sections
+      // If no sections, treat whole doc as one chunk
+      if (sections.length === 0) {
+        pendingChunks.push({
+          id: `${metadata.path}#main`,
+          docPath: metadata.path,
+          title: metadata.title,
+          category: metadata.category,
+          product: metadata.product,
+          heading: metadata.title,
+          content: content.slice(0, 2000),
+          textForEmbedding: `${metadata.title} ${content}`.slice(0, 8000),
+        });
+        continue;
       }
 
-      const chunk: DocChunk = {
-        id: `${metadata.path}#section-${i}`,
-        docPath: metadata.path,
-        title: metadata.title,
-        category: metadata.category,
-        product: metadata.product,
-        heading: section.heading,
-        content: section.content.slice(0, 1500),
-        embedding: generateEmbedding(`${metadata.title} ${section.heading} ${section.content}`),
-      };
-      this.chunks.push(chunk);
-    }
-  }
+      // Create a chunk for each section
+      for (let i = 0; i < sections.length; i++) {
+        const section = sections[i];
+        const chunkText = `${section.heading}\n${section.content}`.slice(0, 2000);
 
-  addDocs(docs: ParsedDoc[]): void {
-    for (const doc of docs) {
-      this.addDoc(doc);
+        if (chunkText.trim().length < 50) {
+          continue; // Skip very short sections
+        }
+
+        pendingChunks.push({
+          id: `${metadata.path}#section-${i}`,
+          docPath: metadata.path,
+          title: metadata.title,
+          category: metadata.category,
+          product: metadata.product,
+          heading: section.heading,
+          content: section.content.slice(0, 1500),
+          textForEmbedding: `${metadata.title} ${section.heading} ${section.content}`.slice(0, 8000),
+        });
+      }
     }
+
+    // Generate embeddings in batches
+    console.log(`Generating embeddings for ${pendingChunks.length} chunks...`);
+    const texts = pendingChunks.map((c) => c.textForEmbedding);
+    const embeddings = await generateEmbeddings(texts, "document");
+
+    // Combine chunks with their embeddings
+    for (let i = 0; i < pendingChunks.length; i++) {
+      const pending = pendingChunks[i];
+      this.chunks.push({
+        id: pending.id,
+        docPath: pending.docPath,
+        title: pending.title,
+        category: pending.category,
+        product: pending.product,
+        heading: pending.heading,
+        content: pending.content,
+        embedding: embeddings[i],
+      });
+    }
+
     this.initialized = true;
     console.log(`Vector store initialized with ${this.chunks.length} chunks from ${docs.length} docs`);
   }
 
-  search(query: string, topK: number = 5): SearchResult[] {
+  async search(query: string, topK: number = 5): Promise<SearchResult[]> {
     if (this.chunks.length === 0) {
       return [];
     }
 
-    const queryEmbedding = generateEmbedding(query);
+    // Use "query" input type for search queries
+    const queryEmbedding = await generateEmbedding(query, "query");
     const results: SearchResult[] = [];
 
     for (const chunk of this.chunks) {

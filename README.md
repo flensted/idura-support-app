@@ -106,6 +106,7 @@ Handles Slack app_mention and message.im events.
 3. Create environment variables:
    ```bash
    export ANTHROPIC_API_KEY=sk-ant-...
+   export VOYAGE_API_KEY=pa-...
    # Optional for Slack integration:
    export SLACK_BOT_TOKEN=xoxb-...
    export SLACK_SIGNING_SECRET=...
@@ -127,6 +128,7 @@ The server starts on port 3000 (or `PORT` env var).
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes | Claude API key |
+| `VOYAGE_API_KEY` | Yes | Voyage AI API key for embeddings |
 | `SLACK_BOT_TOKEN` | No | Slack bot OAuth token (`xoxb-...`) |
 | `SLACK_SIGNING_SECRET` | No | Slack app signing secret |
 | `ADMIN_API_KEY` | No | Protect `/api/kb/rebuild` endpoint |
@@ -143,6 +145,7 @@ The server starts on port 3000 (or `PORT` env var).
 
 4. Add environment variables in the **Variables** tab:
    - `ANTHROPIC_API_KEY` (required)
+   - `VOYAGE_API_KEY` (required)
    - `SLACK_BOT_TOKEN` (if using Slack)
    - `SLACK_SIGNING_SECRET` (if using Slack)
 

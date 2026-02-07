@@ -1,68 +1,115 @@
-import Anthropic from "@anthropic-ai/sdk";
+import https from "https";
 
-let client: Anthropic | null = null;
+const EMBEDDING_DIM = 1024; // Voyage AI voyage-2 dimension
+const VOYAGE_MODEL = "voyage-2";
 
-function getClient(): Anthropic {
-  if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error("ANTHROPIC_API_KEY is required for embeddings");
-    }
-    client = new Anthropic({ apiKey });
-  }
-  return client;
+interface VoyageResponse {
+  object: string;
+  data: Array<{
+    object: string;
+    embedding: number[];
+    index: number;
+  }>;
+  model: string;
+  usage: {
+    total_tokens: number;
+  };
 }
 
-// Use Voyage AI embeddings via Anthropic's partnership
-// For simplicity, we'll use a hash-based approach initially and can upgrade later
-// This provides a working system without additional API dependencies
-
-const EMBEDDING_DIM = 384;
-
-// Simple hash-based embedding for MVP - can be replaced with real embeddings later
-function simpleHash(str: string): number {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
+function getVoyageApiKey(): string {
+  const apiKey = process.env.VOYAGE_API_KEY;
+  if (!apiKey) {
+    throw new Error("VOYAGE_API_KEY environment variable is not set");
   }
-  return hash;
+  return apiKey;
 }
 
-// Generate a deterministic pseudo-embedding from text
-// This is a placeholder - replace with real embeddings API for better quality
-export function generateEmbedding(text: string): number[] {
-  const normalized = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-  const words = normalized.split(" ");
-  const embedding = new Array(EMBEDDING_DIM).fill(0);
+async function callVoyageApi(texts: string[], inputType: "document" | "query"): Promise<number[][]> {
+  const apiKey = getVoyageApiKey();
 
-  // Bag of words with position weighting
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const hash = simpleHash(word);
-    const idx = Math.abs(hash) % EMBEDDING_DIM;
-    const positionWeight = 1 / (1 + Math.log(i + 1));
-    embedding[idx] += positionWeight;
+  const payload = JSON.stringify({
+    model: VOYAGE_MODEL,
+    input: texts,
+    input_type: inputType,
+  });
 
-    // Also add bigrams
-    if (i < words.length - 1) {
-      const bigram = word + " " + words[i + 1];
-      const bigramHash = simpleHash(bigram);
-      const bigramIdx = Math.abs(bigramHash) % EMBEDDING_DIM;
-      embedding[bigramIdx] += positionWeight * 0.5;
-    }
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: "api.voyageai.com",
+        path: "/v1/embeddings",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`Voyage API error ${res.statusCode}: ${data}`));
+            return;
+          }
+          try {
+            const response: VoyageResponse = JSON.parse(data);
+            const embeddings = response.data
+              .sort((a, b) => a.index - b.index)
+              .map((d) => d.embedding);
+            resolve(embeddings);
+          } catch (e) {
+            reject(new Error(`Failed to parse Voyage response: ${e}`));
+          }
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Cache for document embeddings (computed once at startup)
+const embeddingCache = new Map<string, number[]>();
+
+export async function generateEmbedding(text: string, inputType: "document" | "query" = "document"): Promise<number[]> {
+  // Check cache for documents
+  if (inputType === "document") {
+    const cached = embeddingCache.get(text);
+    if (cached) return cached;
   }
 
-  // Normalize to unit vector
-  const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-  if (magnitude > 0) {
-    for (let i = 0; i < embedding.length; i++) {
-      embedding[i] /= magnitude;
-    }
+  const embeddings = await callVoyageApi([text], inputType);
+  const embedding = embeddings[0];
+
+  // Cache document embeddings
+  if (inputType === "document") {
+    embeddingCache.set(text, embedding);
   }
 
   return embedding;
+}
+
+export async function generateEmbeddings(texts: string[], inputType: "document" | "query" = "document"): Promise<number[][]> {
+  // Voyage API supports batching up to 128 texts
+  const BATCH_SIZE = 128;
+  const results: number[][] = [];
+
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const batch = texts.slice(i, i + BATCH_SIZE);
+    const embeddings = await callVoyageApi(batch, inputType);
+    results.push(...embeddings);
+
+    // Small delay between batches to avoid rate limits
+    if (i + BATCH_SIZE < texts.length) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  return results;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -79,6 +126,10 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   }
   const magnitude = Math.sqrt(normA) * Math.sqrt(normB);
   return magnitude === 0 ? 0 : dotProduct / magnitude;
+}
+
+export function clearEmbeddingCache(): void {
+  embeddingCache.clear();
 }
 
 export { EMBEDDING_DIM };

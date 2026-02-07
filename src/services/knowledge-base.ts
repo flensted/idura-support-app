@@ -22,7 +22,7 @@ async function initializeKB(): Promise<void> {
   try {
     const docs = await fetchAllDocs();
     vectorStore.clear();
-    vectorStore.addDocs(docs);
+    await vectorStore.addDocs(docs);
     lastInitTime = Date.now();
     console.log(`Knowledge base initialized in ${Date.now() - startTime}ms`);
   } catch (error) {
@@ -62,7 +62,7 @@ function pathToUrl(docPath: string): string {
 export async function searchKB(query: string, topK: number = 5): Promise<KBSearchResult[]> {
   await ensureKBInitialized();
 
-  const results = vectorStore.search(query, topK);
+  const results = await vectorStore.search(query, topK);
 
   return results.map((r) => ({
     title: r.chunk.title,
