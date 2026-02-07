@@ -39,6 +39,11 @@ Question: ${question}
 Please answer based on the documentation context above. Include relevant URLs as sources.`;
 }
 
+interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export class ClaudeService {
   private client: Anthropic;
 
@@ -49,7 +54,10 @@ export class ClaudeService {
     this.client = new Anthropic({ apiKey });
   }
 
-  async ask(question: string): Promise<{ answer: string; sources: string[] }> {
+  async ask(
+    question: string,
+    conversationHistory: ConversationMessage[] = []
+  ): Promise<{ answer: string; sources: string[] }> {
     // Search knowledge base for relevant context
     let context: KBSearchResult[] = [];
     try {
@@ -60,16 +68,17 @@ export class ClaudeService {
 
     const prompt = buildContextPrompt(question, context);
 
+    // Build messages array with conversation history
+    const messages: ConversationMessage[] = [
+      ...conversationHistory,
+      { role: "user", content: prompt },
+    ];
+
     const response = await this.client.messages.create({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2048,
       system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
+      messages,
     });
 
     const textContent = response.content.find((block) => block.type === "text");
