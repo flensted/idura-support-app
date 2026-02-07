@@ -235,17 +235,26 @@ The KB will rebuild automatically when docs are pushed to main/master.
 │   Users     │◀────│   (Express) │◀────│   API       │
 └─────────────┘     └──────┬──────┘     └─────────────┘
                            │
-                    ┌──────▼──────┐
-                    │  Knowledge  │
-                    │    Base     │
-                    │  (In-mem)   │
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │   GitHub    │
-                    │ criipto/docs│
-                    └─────────────┘
+              ┌────────────┼────────────┐
+              │            │            │
+       ┌──────▼──────┐  ┌──▼───┐  ┌─────▼─────┐
+       │  Vector     │  │ RAG  │  │  Voyage   │
+       │  Store      │◀─│      │─▶│  AI API   │
+       │  (In-mem)   │  └──────┘  │(Embeddings│
+       └──────┬──────┘            └───────────┘
+              │
+       ┌──────▼──────┐
+       │   GitHub    │
+       │ criipto/docs│
+       └─────────────┘
 ```
+
+**Data flow:**
+1. Docs fetched from GitHub → parsed into chunks
+2. Chunks sent to Voyage AI → semantic embeddings (voyage-2, 1024 dims)
+3. Embeddings stored in-memory for fast similarity search
+4. User queries → Voyage AI embedding → cosine similarity → top matches
+5. Matched chunks + query → Claude API → answer
 
 ## License
 
