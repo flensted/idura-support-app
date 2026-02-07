@@ -76,27 +76,23 @@ app.get("/api/kb/stats", (_req: Request, res: Response) => {
 });
 
 // Manual KB rebuild endpoint (protected by admin key)
-app.post("/api/kb/rebuild", async (req: Request, res: Response) => {
+app.post("/api/kb/rebuild", (req: Request, res: Response) => {
   const adminKey = process.env.ADMIN_API_KEY;
-  const providedKey = req.headers["x-admin-key"];
+  const providedKey = req.headers["x-api-key"];
 
   if (adminKey && providedKey !== adminKey) {
     res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" } satisfies ErrorResponse);
     return;
   }
 
-  try {
-    await rebuildKB();
-    const stats = getKBStats();
-    res.json({
-      success: true,
-      chunkCount: stats.chunkCount,
-      lastInitTime: new Date(stats.lastInitTime).toISOString(),
-    });
-  } catch (error) {
-    console.error("KB rebuild failed:", error);
-    res.status(500).json({ error: "Failed to rebuild KB", code: "KB_REBUILD_FAILED" } satisfies ErrorResponse);
-  }
+  // Fire and forget - respond immediately, rebuild in background
+  console.log("Manual KB rebuild triggered");
+  rebuildKB().catch((err) => console.error("Background KB rebuild failed:", err));
+
+  res.json({
+    success: true,
+    message: "KB rebuild triggered. Check /api/kb/stats for progress.",
+  });
 });
 
 // GitHub webhook for auto-rebuild
