@@ -180,8 +180,8 @@ app.post("/api/slack/events", async (req: Request & { rawBody?: string }, res: R
       slackEvent.text &&
       slackEvent.channel
     ) {
-      // Skip bot's own messages
-      if (slackEvent.user === undefined) return;
+      // Skip bot messages (including our own) to prevent loops
+      if (slackEvent.bot_id || slackEvent.subtype === "bot_message") return;
 
       const question = extractQuestion(slackEvent.text);
       if (!question) return;

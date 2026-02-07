@@ -10,6 +10,8 @@ interface SlackEvent {
     channel?: string;
     ts?: string;
     thread_ts?: string;
+    bot_id?: string;
+    subtype?: string;
   };
   challenge?: string;
 }
