@@ -1,5 +1,6 @@
 import { fetchAllDocs, ParsedDoc } from "./docs-parser.js";
 import { vectorStore, SearchResult } from "./vector-store.js";
+import { loadSlackQA } from "./slack-qa-loader.js";
 
 const DOCS_BASE_URL = "https://docs.criipto.com";
 
@@ -20,11 +21,21 @@ async function initializeKB(): Promise<void> {
   const startTime = Date.now();
 
   try {
+    // Load documentation from GitHub
     const docs = await fetchAllDocs();
+
+    // Load Slack Q&A pairs
+    const slackQA = loadSlackQA();
+
+    // Combine all sources
+    const allDocs = [...docs, ...slackQA];
+
     vectorStore.clear();
-    await vectorStore.addDocs(docs);
+    await vectorStore.addDocs(allDocs);
     lastInitTime = Date.now();
-    console.log(`Knowledge base initialized in ${Date.now() - startTime}ms`);
+    console.log(
+      `Knowledge base initialized in ${Date.now() - startTime}ms (${docs.length} docs + ${slackQA.length} Q&A topics)`
+    );
   } catch (error) {
     console.error("Failed to initialize knowledge base:", error);
     throw error;
@@ -54,6 +65,10 @@ export async function ensureKBInitialized(): Promise<void> {
 }
 
 function pathToUrl(docPath: string): string {
+  // Slack Q&A doesn't have external URLs
+  if (docPath.startsWith("/slack-qa/")) {
+    return "Community Support Q&A";
+  }
   // Convert /verify/getting-started/overview.mdx to https://docs.criipto.com/verify/getting-started/overview
   let url = docPath.replace(/\.mdx$/, "").replace(/\/index$/, "");
   return `${DOCS_BASE_URL}${url}`;
