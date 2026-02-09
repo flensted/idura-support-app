@@ -15,34 +15,34 @@ import AdmZip from "adm-zip";
 
 // Idura staff user IDs (from @criipto.com and @idura.eu emails)
 const STAFF_IDS = new Set([
-  "U03KQSTKK7U", // Anders from Idura
-  "U05UQK99W6N", // Kasper from Idura
-  "U0726BRR4E8", // Nikolaj Munk-Petersen
-  "U07FWRPQKR6", // Lasse
-  "U07GR7TBS84", // Lars Damgaard
-  "U07KPR5PSB0", // Jonas From Idura
-  "U07KYT36V28", // Frederik Krogsdal Jacobsen
-  "U093VPVABA6", // Frederik from Idura
-  "U09C67WJ1E0", // Håkon Tveita
-  "U09GK2Z9UAY", // Sebastian from Idura
-  "U09RYPRKF1Q", // Mark Junge
-  "U0A4GP62VLL", // Anders from Idura
-  "U0A6ZNDKQ22", // Joshua Nielsen
-  "U0A75N40G0L", // Martin
-  "U0A9RGP1QQ0", // Arjuna from Idura
-  "U03KAAJ0REK", // Mikkel Christensen
-  "U03KN05BW1K", // Mick from Idura
-  "U03Q92A3LKT", // Janni Møller Thomsen
-  "U03T071R0KX", // Niels from Criipto
-  "U048QLU89EK", // Anne Taranger Gjesdahl
-  "U04FX9XARA9", // Tobias Marshall-Heyman
-  "U04KVDBNLB1", // Natalia
-  "U063XDTHWBB", // Trine Stensgaard Madsen
-  "U06HJ0TJH7F", // Katrine Thielke
-  "U06SBGUC7U7", // Esben Hjorth Jensen
-  "U08NJT4DV1P", // Kristian Hedberg
-  "U0979RRFAEB", // Jan from Idura
-  "U09HG8TV3EF", // Thomas
+  "U03KQSTKK7U",
+  "U05UQK99W6N",
+  "U0726BRR4E8",
+  "U07FWRPQKR6",
+  "U07GR7TBS84",
+  "U07KPR5PSB0",
+  "U07KYT36V28",
+  "U093VPVABA6",
+  "U09C67WJ1E0",
+  "U09GK2Z9UAY",
+  "U09RYPRKF1Q",
+  "U0A4GP62VLL",
+  "U0A6ZNDKQ22",
+  "U0A75N40G0L",
+  "U0A9RGP1QQ0",
+  "U03KAAJ0REK",
+  "U03KN05BW1K",
+  "U03Q92A3LKT",
+  "U03T071R0KX",
+  "U048QLU89EK",
+  "U04FX9XARA9",
+  "U04KVDBNLB1",
+  "U063XDTHWBB",
+  "U06HJ0TJH7F",
+  "U06SBGUC7U7",
+  "U08NJT4DV1P",
+  "U0979RRFAEB",
+  "U09HG8TV3EF",
 ]);
 
 // Channels to process
