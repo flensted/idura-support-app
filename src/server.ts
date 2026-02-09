@@ -10,6 +10,7 @@ import {
   postSlackMessage,
   SlackEvent,
 } from "./services/slack.js";
+import { conversationStore } from "./services/conversation-store.js";
 
 const app = express();
 
@@ -52,12 +53,17 @@ function getClaudeService(): ClaudeService {
 // Health check endpoint
 app.get("/health", (_req: Request, res: Response) => {
   const kbStats = getKBStats();
+  const convStats = conversationStore.getStats();
   res.json({
     status: "ok",
     kb: {
       initialized: kbStats.initialized,
       chunkCount: kbStats.chunkCount,
       lastInitTime: kbStats.lastInitTime ? new Date(kbStats.lastInitTime).toISOString() : null,
+    },
+    conversations: {
+      active: convStats.activeConversations,
+      totalMessages: convStats.totalMessages,
     },
     slack: {
       configured: !!(process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET),
@@ -186,12 +192,29 @@ app.post("/api/slack/events", async (req: Request & { rawBody?: string }, res: R
       const question = extractQuestion(slackEvent.text);
       if (!question) return;
 
+      // Get conversation ID for history tracking
+      const conversationId = conversationStore.getConversationId(
+        slackEvent.channel,
+        slackEvent.user || "unknown",
+        slackEvent.thread_ts
+      );
+
+      // Add user message to history
+      conversationStore.addUserMessage(conversationId, question);
+
       console.log(`Slack question from ${slackEvent.user}: ${question}`);
 
       try {
         const claude = getClaudeService();
-        const result = await claude.ask(question);
+
+        // Get conversation history (excludes current message)
+        const history = conversationStore.getHistory(conversationId);
+
+        const result = await claude.ask(question, history);
         const blocks = formatSlackResponse(result.answer, result.sources);
+
+        // Store assistant response in history
+        conversationStore.addAssistantMessage(conversationId, result.answer);
 
         if (botToken) {
           await postSlackMessage(
