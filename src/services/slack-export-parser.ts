@@ -1,16 +1,17 @@
-#!/usr/bin/env npx ts-node
 /**
- * Slack Export Q&A Parser
+ * Slack Export Parser
  *
- * Parses Slack export to extract Q&A pairs where:
+ * Parses Slack export ZIP files to extract Q&A pairs where:
  * - Customer asks a question
  * - Idura staff member responds
  *
- * Output: JSON file with anonymized Q&A pairs for knowledge base
+ * Supports both directory-based parsing (for scripts) and
+ * in-memory ZIP parsing (for API uploads).
  */
 
 import fs from "fs";
 import path from "path";
+import AdmZip from "adm-zip";
 
 // Idura staff user IDs (from @criipto.com and @idura.eu emails)
 const STAFF_IDS = new Set([
@@ -58,7 +59,7 @@ interface SlackMessage {
   bot_id?: string;
 }
 
-interface QAPair {
+export interface QAPair {
   question: string;
   answer: string;
   channel: string;
@@ -73,28 +74,19 @@ interface UserInfo {
   isStaff: boolean;
 }
 
-// Load user info
-function loadUsers(exportDir: string): Map<string, UserInfo> {
-  const usersPath = path.join(exportDir, "users.json");
-  const users = JSON.parse(fs.readFileSync(usersPath, "utf-8"));
-  const userMap = new Map<string, UserInfo>();
-
-  for (const user of users) {
-    userMap.set(user.id, {
-      id: user.id,
-      name: user.name || "",
-      realName: user.profile?.real_name || "",
-      isStaff: STAFF_IDS.has(user.id),
-    });
-  }
-
-  return userMap;
+interface SlackUser {
+  id: string;
+  name?: string;
+  profile?: {
+    real_name?: string;
+    email?: string;
+  };
 }
 
 // Anonymize text - remove user mentions and potential PII
 function anonymizeText(text: string, users: Map<string, UserInfo>): string {
   // Replace user mentions <@UXXXX> with "a user" or "support"
-  let result = text.replace(/<@([A-Z0-9]+)>/g, (match, userId) => {
+  let result = text.replace(/<@([A-Z0-9]+)>/g, (_match, userId) => {
     const user = users.get(userId);
     if (user?.isStaff) {
       return "support";
@@ -131,52 +123,76 @@ function extractTopic(question: string): string {
     return "BankID";
   }
   if (lowerQ.includes("mitid")) return "MitID";
-  if (lowerQ.includes("signature") || lowerQ.includes("signing") || lowerQ.includes("signatur")) {
+  if (
+    lowerQ.includes("signature") ||
+    lowerQ.includes("signing") ||
+    lowerQ.includes("signatur")
+  ) {
     return "Signatures";
   }
-  if (lowerQ.includes("verify") || lowerQ.includes("authentication") || lowerQ.includes("autentisering")) {
+  if (
+    lowerQ.includes("verify") ||
+    lowerQ.includes("authentication") ||
+    lowerQ.includes("autentisering")
+  ) {
     return "Verify/Authentication";
   }
   if (lowerQ.includes("webhook")) return "Webhooks";
   if (lowerQ.includes("graphql") || lowerQ.includes("api")) return "API";
   if (lowerQ.includes("token")) return "Tokens";
-  if (lowerQ.includes("error") || lowerQ.includes("feil") || lowerQ.includes("fejl")) {
+  if (
+    lowerQ.includes("error") ||
+    lowerQ.includes("feil") ||
+    lowerQ.includes("fejl")
+  ) {
     return "Troubleshooting";
   }
   if (lowerQ.includes("preapprov")) return "Preapproval";
-  if (lowerQ.includes("document") || lowerQ.includes("pdf") || lowerQ.includes("dokument")) {
+  if (
+    lowerQ.includes("document") ||
+    lowerQ.includes("pdf") ||
+    lowerQ.includes("dokument")
+  ) {
     return "Documents";
   }
 
   return "General";
 }
 
-// Process a single channel
-function processChannel(
-  exportDir: string,
-  channelName: string,
-  users: Map<string, UserInfo>
-): QAPair[] {
-  const channelDir = path.join(exportDir, channelName);
+// Build user map from users.json content
+function buildUserMap(usersJson: SlackUser[]): Map<string, UserInfo> {
+  const userMap = new Map<string, UserInfo>();
 
-  if (!fs.existsSync(channelDir)) {
-    console.log(`Channel ${channelName} not found, skipping`);
-    return [];
+  for (const user of usersJson) {
+    const email = user.profile?.email || "";
+    const isStaffByEmail =
+      email.includes("@criipto.com") || email.includes("@idura.eu");
+    const isStaffById = STAFF_IDS.has(user.id);
+
+    userMap.set(user.id, {
+      id: user.id,
+      name: user.name || "",
+      realName: user.profile?.real_name || "",
+      isStaff: isStaffById || isStaffByEmail,
+    });
   }
 
+  return userMap;
+}
+
+// Process messages from a channel to extract Q&A pairs
+function processChannelMessages(
+  channelName: string,
+  messageFiles: Map<string, SlackMessage[]>,
+  users: Map<string, UserInfo>
+): QAPair[] {
   const pairs: QAPair[] = [];
-  const files = fs.readdirSync(channelDir).filter((f) => f.endsWith(".json"));
 
   // Group messages by thread
   const threads = new Map<string, SlackMessage[]>();
   const topLevelMessages = new Map<string, SlackMessage>();
 
-  for (const file of files) {
-    const filePath = path.join(channelDir, file);
-    const messages: SlackMessage[] = JSON.parse(
-      fs.readFileSync(filePath, "utf-8")
-    );
-
+  for (const messages of messageFiles.values()) {
     for (const msg of messages) {
       if (msg.type !== "message" || msg.subtype || msg.bot_id || !msg.text) {
         continue;
@@ -237,61 +253,111 @@ function processChannel(
   return pairs;
 }
 
-// Main
-function main() {
-  const exportDir = process.argv[2];
+export interface ParseResult {
+  pairs: QAPair[];
+  stats: {
+    totalUsers: number;
+    staffUsers: number;
+    channelsProcessed: string[];
+    pairsByTopic: Record<string, number>;
+  };
+}
 
-  if (!exportDir) {
-    console.error("Usage: npx ts-node parse-slack-export.ts <export-dir>");
-    console.error(
-      "Example: npx ts-node parse-slack-export.ts '../slack-export/Idura Community...'"
-    );
-    process.exit(1);
+/**
+ * Parse a Slack export ZIP file from a Buffer
+ */
+export async function parseSlackExportZip(
+  zipBuffer: Buffer
+): Promise<ParseResult> {
+  const zip = new AdmZip(zipBuffer);
+  const entries = zip.getEntries();
+
+  // Find the export root (might be in a subdirectory)
+  let exportRoot = "";
+  for (const entry of entries) {
+    if (entry.entryName.endsWith("/users.json")) {
+      exportRoot = entry.entryName.replace("users.json", "");
+      break;
+    }
+    if (entry.entryName === "users.json") {
+      exportRoot = "";
+      break;
+    }
   }
 
-  if (!fs.existsSync(exportDir)) {
-    console.error(`Export directory not found: ${exportDir}`);
-    process.exit(1);
+  // Load users.json
+  const usersEntry = entries.find(
+    (e: { entryName: string }) => e.entryName === exportRoot + "users.json"
+  );
+  if (!usersEntry) {
+    throw new Error("users.json not found in ZIP file");
   }
 
-  console.log("Loading users...");
-  const users = loadUsers(exportDir);
-  console.log(`Loaded ${users.size} users, ${STAFF_IDS.size} are staff`);
+  const usersJson: SlackUser[] = JSON.parse(
+    usersEntry.getData().toString("utf-8")
+  );
+  const users = buildUserMap(usersJson);
 
   const allPairs: QAPair[] = [];
+  const processedChannels: string[] = [];
 
-  for (const channel of TARGET_CHANNELS) {
-    console.log(`Processing #${channel}...`);
-    const pairs = processChannel(exportDir, channel, users);
-    console.log(`  Found ${pairs.length} Q&A pairs`);
+  // Process each target channel
+  for (const channelName of TARGET_CHANNELS) {
+    const channelPrefix = exportRoot + channelName + "/";
+    const channelEntries = entries.filter(
+      (e: { entryName: string }) =>
+        e.entryName.startsWith(channelPrefix) && e.entryName.endsWith(".json")
+    );
+
+    if (channelEntries.length === 0) {
+      continue;
+    }
+
+    const messageFiles = new Map<string, SlackMessage[]>();
+    for (const entry of channelEntries) {
+      const content = entry.getData().toString("utf-8");
+      const messages: SlackMessage[] = JSON.parse(content);
+      messageFiles.set(entry.entryName, messages);
+    }
+
+    const pairs = processChannelMessages(channelName, messageFiles, users);
     allPairs.push(...pairs);
+    processedChannels.push(channelName);
   }
 
   // Sort by date
   allPairs.sort((a, b) => a.date.localeCompare(b.date));
 
-  // Output summary by topic
-  const byTopic = new Map<string, number>();
+  // Calculate stats
+  const pairsByTopic: Record<string, number> = {};
   for (const pair of allPairs) {
-    byTopic.set(pair.topic, (byTopic.get(pair.topic) || 0) + 1);
+    pairsByTopic[pair.topic] = (pairsByTopic[pair.topic] || 0) + 1;
   }
 
-  console.log("\nQ&A pairs by topic:");
-  for (const [topic, count] of [...byTopic.entries()].sort(
-    (a, b) => b[1] - a[1]
-  )) {
-    console.log(`  ${topic}: ${count}`);
-  }
+  const staffCount = [...users.values()].filter((u) => u.isStaff).length;
 
-  // Write output
-  const outputPath = path.join(__dirname, "../data/slack-qa.json");
+  return {
+    pairs: allPairs,
+    stats: {
+      totalUsers: users.size,
+      staffUsers: staffCount,
+      channelsProcessed: processedChannels,
+      pairsByTopic,
+    },
+  };
+}
+
+/**
+ * Save Q&A pairs to the data directory
+ */
+export function saveQAPairs(pairs: QAPair[]): string {
+  const outputPath = path.join(process.cwd(), "data/slack-qa.json");
   const dataDir = path.dirname(outputPath);
+
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  fs.writeFileSync(outputPath, JSON.stringify(allPairs, null, 2));
-  console.log(`\nWrote ${allPairs.length} Q&A pairs to ${outputPath}`);
+  fs.writeFileSync(outputPath, JSON.stringify(pairs, null, 2));
+  return outputPath;
 }
-
-main();

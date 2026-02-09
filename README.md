@@ -64,7 +64,32 @@ GET /api/kb/stats
 
 ```bash
 POST /api/kb/rebuild
-X-Admin-Key: your-admin-key
+X-Api-Key: your-admin-key
+```
+
+### Upload Slack Export
+
+Upload a Slack workspace export ZIP file to update the community Q&A knowledge base:
+
+```bash
+curl -X POST https://your-app.up.railway.app/api/kb/upload-slack-export \
+  -H "X-Api-Key: your-admin-key" \
+  -F "file=@/path/to/slack-export.zip"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Slack export processed successfully. KB rebuild triggered.",
+  "stats": {
+    "qaPairsExtracted": 1297,
+    "totalUsers": 1269,
+    "staffUsers": 28,
+    "channelsProcessed": ["support", "signatures-api", "general"],
+    "pairsByTopic": { "MitID": 387, "BankID": 168, ... }
+  }
+}
 ```
 
 ### GitHub Webhook (Auto-rebuild)

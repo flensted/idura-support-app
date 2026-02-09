@@ -1,5 +1,6 @@
 import express, { Request, Response } from "express";
 import crypto from "crypto";
+import multer from "multer";
 import { ClaudeService } from "./services/claude.js";
 import { checkRateLimit, getClientId } from "./services/rate-limiter.js";
 import { ensureKBInitialized, rebuildKB, getKBStats } from "./services/knowledge-base.js";
@@ -11,6 +12,22 @@ import {
   SlackEvent,
 } from "./services/slack.js";
 import { conversationStore } from "./services/conversation-store.js";
+import { parseSlackExportZip, saveQAPairs } from "./services/slack-export-parser.js";
+
+// Configure multer for file uploads (in memory)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max
+  },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === "application/zip" || file.originalname.endsWith(".zip")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only ZIP files are allowed"));
+    }
+  },
+});
 
 const app = express();
 
@@ -100,6 +117,65 @@ app.post("/api/kb/rebuild", (req: Request, res: Response) => {
     message: "KB rebuild triggered. Check /api/kb/stats for progress.",
   });
 });
+
+// Slack export upload endpoint (protected by admin key)
+app.post(
+  "/api/kb/upload-slack-export",
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    const adminKey = process.env.ADMIN_API_KEY;
+    const providedKey = req.headers["x-api-key"];
+
+    if (adminKey && providedKey !== adminKey) {
+      res.status(401).json({ error: "Unauthorized", code: "UNAUTHORIZED" } satisfies ErrorResponse);
+      return;
+    }
+
+    if (!req.file) {
+      res.status(400).json({ error: "No file uploaded", code: "NO_FILE" } satisfies ErrorResponse);
+      return;
+    }
+
+    console.log(`Processing Slack export: ${req.file.originalname} (${req.file.size} bytes)`);
+
+    try {
+      // Parse the ZIP file
+      const result = await parseSlackExportZip(req.file.buffer);
+
+      if (result.pairs.length === 0) {
+        res.status(400).json({
+          error: "No Q&A pairs found in export",
+          code: "NO_QA_PAIRS",
+          stats: result.stats,
+        });
+        return;
+      }
+
+      // Save the Q&A pairs
+      const outputPath = saveQAPairs(result.pairs);
+      console.log(`Saved ${result.pairs.length} Q&A pairs to ${outputPath}`);
+
+      // Trigger KB rebuild in background
+      rebuildKB().catch((err) => console.error("Background KB rebuild failed:", err));
+
+      res.json({
+        success: true,
+        message: "Slack export processed successfully. KB rebuild triggered.",
+        stats: {
+          qaPairsExtracted: result.pairs.length,
+          ...result.stats,
+        },
+      });
+    } catch (error) {
+      console.error("Failed to process Slack export:", error);
+      res.status(500).json({
+        error: "Failed to process Slack export",
+        code: "PARSE_ERROR",
+        details: error instanceof Error ? error.message : "Unknown error",
+      } satisfies ErrorResponse & { details?: string });
+    }
+  }
+);
 
 // GitHub webhook for auto-rebuild
 app.post("/api/webhook/github", async (req: Request, res: Response) => {
